@@ -2,26 +2,19 @@
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
              xmlns:flowable="http://flowable.org/bpmn"
-             xmlns:collibra="http://collibra.com/workflow"
+             xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+             xmlns:omgdc="http://www.omg.org/spec/DD/20100524/DC"
+             xmlns:omgdi="http://www.omg.org/spec/DD/20100524/DI"
              targetNamespace="http://collibra.com/workflow"
              xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL http://www.omg.org/spec/BPMN/20100524/BPMN20.xsd">
 
   <process id="messageWorkflow" name="Message Workflow" isExecutable="true">
 
-    <!-- Configuration Variables -->
-    <extensionElements>
-      <collibra:workflowVariable name="recipientGroup" type="string" defaultValue="JP_Test_Group_For_Temporary"/>
-      <collibra:workflowVariable name="emailNotificationEnabled" type="boolean" defaultValue="true"/>
-      <collibra:workflowVariable name="escalationDuration" type="string" defaultValue="P7D"/>
-      <collibra:workflowVariable name="mailSubjectPrefix" type="string" defaultValue="[Collibra Q&amp;A]"/>
-      <collibra:workflowVariable name="escalationGroup" type="string" defaultValue="Data_Governance_Council"/>
-    </extensionElements>
-
     <!-- Start Event -->
     <startEvent id="startEvent" name="Start Message Workflow">
       <extensionElements>
         <flowable:formProperty id="title" name="Title" type="string" required="true"/>
-        <flowable:formProperty id="messageBody" name="Message" type="textarea" required="true"/>
+        <flowable:formProperty id="messageBody" name="Message" type="text" required="true"/>
         <flowable:formProperty id="priority" name="Priority" type="enum" required="true">
           <flowable:value id="High" name="High"/>
           <flowable:value id="Medium" name="Medium"/>
@@ -32,45 +25,52 @@
           <flowable:value id="IssueReport" name="Issue Report"/>
           <flowable:value id="Other" name="Other"/>
         </flowable:formProperty>
-        <flowable:formProperty id="relatedAssetId" name="Related Asset" type="asset" required="false"/>
+        <flowable:formProperty id="relatedAssetId" name="Related Asset" type="community_resource" required="false"/>
+        <flowable:formProperty id="recipientGroup" name="Recipient Group" type="string" required="true" default="Data_Stewards"/>
+        <flowable:formProperty id="escalationGroup" name="Escalation Group" type="string" required="false" default="Data_Governance_Council"/>
       </extensionElements>
     </startEvent>
 
-    <!-- Service Task: Initialize Workflow -->
-    <serviceTask id="initializeWorkflow" name="Initialize Workflow" flowable:delegateExpression="${initializeWorkflowDelegate}">
-      <extensionElements>
-        <flowable:field name="workflowStatus">
-          <flowable:string>New</flowable:string>
-        </flowable:field>
-      </extensionElements>
-    </serviceTask>
+    <!-- Script Task: Initialize Workflow Status -->
+    <scriptTask id="initializeWorkflow" name="Initialize Workflow" scriptFormat="groovy">
+      <script><![CDATA[
+        execution.setVariable("workflowStatus", "New")
+        execution.setVariable("conversationHistory", "")
+      ]]></script>
+    </scriptTask>
+
+    <!-- Exclusive Gateway: Check if Asset Provided -->
+    <exclusiveGateway id="checkAssetProvided" name="Related Asset Provided?"/>
 
     <!-- Service Task: Save Initial Comment -->
-    <serviceTask id="saveInitialComment" name="Save Initial Comment" flowable:delegateExpression="${addCommentDelegate}">
+    <serviceTask id="saveInitialComment" name="Save Initial Comment"
+                 flowable:class="com.collibra.dgc.core.workflow.activiti.delegate.AddCommentDelegate">
       <extensionElements>
         <flowable:field name="resourceId">
           <flowable:expression>${relatedAssetId}</flowable:expression>
         </flowable:field>
         <flowable:field name="content">
-          <flowable:expression>${startUser.firstName} ${startUser.lastName} (${startUser.userName}) - ${now()}: [${category}] ${title}
-${messageBody}</flowable:expression>
+          <flowable:expression>${startUser.firstName} ${startUser.lastName} - [${category}] ${title}
+
+${messageBody}
+
+Priority: ${priority}
+Status: New</flowable:expression>
         </flowable:field>
       </extensionElements>
     </serviceTask>
 
-    <!-- Exclusive Gateway: Check if Asset Provided -->
-    <exclusiveGateway id="checkAssetProvided" name="Related Asset Provided?"/>
-
     <!-- Service Task: Notify Receiver Group -->
-    <serviceTask id="notifyReceiver" name="Notify Receiver Group" flowable:delegateExpression="${mailSenderDelegate}">
+    <serviceTask id="notifyReceiver" name="Notify Receiver Group"
+                 flowable:class="com.collibra.dgc.core.workflow.activiti.delegate.MailSenderDelegate">
       <extensionElements>
         <flowable:field name="to">
-          <flowable:expression>${group(recipientGroup)}</flowable:expression>
+          <flowable:expression>${recipientGroup}</flowable:expression>
         </flowable:field>
         <flowable:field name="subject">
-          <flowable:expression>${mailSubjectPrefix} [${priority}] ${title}</flowable:expression>
+          <flowable:expression>[Collibra Q&amp;A] [${priority}] ${title}</flowable:expression>
         </flowable:field>
-        <flowable:field name="body">
+        <flowable:field name="message">
           <flowable:expression>A new ${category} has been posted by ${startUser.firstName} ${startUser.lastName}.
 
 Title: ${title}
@@ -80,10 +80,7 @@ Category: ${category}
 Message:
 ${messageBody}
 
-${relatedAssetId != null ? 'Related Asset: ' + relatedAssetId : ''}
-
-Please review and respond to this message:
-${taskLink}
+Please review and respond to this message in Collibra.
 
 ---
 This is an automated notification from Collibra Message Workflow.</flowable:expression>
@@ -92,42 +89,43 @@ This is an automated notification from Collibra Message Workflow.</flowable:expr
     </serviceTask>
 
     <!-- User Task: Receiver Response -->
-    <userTask id="receiverTask" name="Review and Respond" flowable:assignee="${group(recipientGroup)}">
+    <userTask id="receiverTask" name="Review and Respond" flowable:candidateGroups="${recipientGroup}">
       <extensionElements>
-        <flowable:formProperty id="conversationHistory" name="Conversation History" type="textarea" expression="${conversationHistory}" writable="false"/>
-        <flowable:formProperty id="originalTitle" name="Title" type="string" expression="${title}" writable="false"/>
-        <flowable:formProperty id="originalPriority" name="Priority" type="string" expression="${priority}" writable="false"/>
-        <flowable:formProperty id="originalCategory" name="Category" type="string" expression="${category}" writable="false"/>
-        <flowable:formProperty id="originalSender" name="From" type="string" expression="${startUser.firstName} ${startUser.lastName} (${startUser.userName})" writable="false"/>
+        <flowable:formProperty id="displayTitle" name="Title" type="string" expression="${title}" writable="false"/>
+        <flowable:formProperty id="displayPriority" name="Priority" type="string" expression="${priority}" writable="false"/>
+        <flowable:formProperty id="displayCategory" name="Category" type="string" expression="${category}" writable="false"/>
+        <flowable:formProperty id="displayMessage" name="Original Message" type="text" expression="${messageBody}" writable="false"/>
+        <flowable:formProperty id="displaySender" name="From" type="string" expression="${startUser.firstName} ${startUser.lastName}" writable="false"/>
         <flowable:formProperty id="receiverAction" name="Action" type="enum" required="true">
           <flowable:value id="Reply" name="Reply"/>
           <flowable:value id="Escalate" name="Escalate"/>
           <flowable:value id="Close" name="Close"/>
         </flowable:formProperty>
-        <flowable:formProperty id="receiverMessage" name="Your Message" type="textarea" required="false"/>
-        <flowable:formProperty id="escalationReason" name="Escalation Reason" type="textarea" required="false"/>
-        <flowable:formProperty id="closureNotes" name="Closure Notes" type="textarea" required="false"/>
+        <flowable:formProperty id="receiverMessage" name="Your Message" type="text" required="false"/>
+        <flowable:formProperty id="escalationReason" name="Escalation Reason" type="text" required="false"/>
+        <flowable:formProperty id="closureNotes" name="Closure Notes" type="text" required="false"/>
       </extensionElements>
     </userTask>
 
     <!-- Boundary Event: Auto-escalation Timer -->
     <boundaryEvent id="escalationTimer" name="Auto-escalation" attachedToRef="receiverTask" cancelActivity="true">
       <timerEventDefinition>
-        <timeDuration>${escalationDuration}</timeDuration>
+        <timeDuration>P7D</timeDuration>
       </timerEventDefinition>
     </boundaryEvent>
 
-    <!-- Service Task: Auto-escalation -->
-    <serviceTask id="autoEscalate" name="Auto-escalate to Council" flowable:delegateExpression="${mailSenderDelegate}">
+    <!-- Service Task: Auto-escalation Notification -->
+    <serviceTask id="autoEscalate" name="Auto-escalate to Council"
+                 flowable:class="com.collibra.dgc.core.workflow.activiti.delegate.MailSenderDelegate">
       <extensionElements>
         <flowable:field name="to">
-          <flowable:expression>${group(escalationGroup)}</flowable:expression>
+          <flowable:expression>${escalationGroup}</flowable:expression>
         </flowable:field>
         <flowable:field name="subject">
-          <flowable:expression>${mailSubjectPrefix} [ESCALATED] ${title}</flowable:expression>
+          <flowable:expression>[Collibra Q&amp;A] [ESCALATED] ${title}</flowable:expression>
         </flowable:field>
-        <flowable:field name="body">
-          <flowable:expression>This message has been automatically escalated due to no response within ${escalationDuration}.
+        <flowable:field name="message">
+          <flowable:expression>This message has been automatically escalated due to no response within 7 days.
 
 Original question from: ${startUser.firstName} ${startUser.lastName}
 Priority: ${priority}
@@ -136,19 +134,18 @@ Category: ${category}
 Message:
 ${messageBody}
 
-Please review and take action:
-${taskLink}</flowable:expression>
+Please review and take action in Collibra.</flowable:expression>
         </flowable:field>
       </extensionElements>
     </serviceTask>
 
     <!-- User Task: Escalated Task -->
-    <userTask id="escalatedTask" name="Handle Escalated Issue" flowable:assignee="${group(escalationGroup)}">
+    <userTask id="escalatedTask" name="Handle Escalated Issue" flowable:candidateGroups="${escalationGroup}">
       <extensionElements>
-        <flowable:formProperty id="conversationHistory" name="Conversation History" type="textarea" expression="${conversationHistory}" writable="false"/>
-        <flowable:formProperty id="originalTitle" name="Title" type="string" expression="${title}" writable="false"/>
-        <flowable:formProperty id="originalPriority" name="Priority" type="string" expression="${priority}" writable="false"/>
-        <flowable:formProperty id="escalatedMessage" name="Response Message" type="textarea" required="true"/>
+        <flowable:formProperty id="displayTitle" name="Title" type="string" expression="${title}" writable="false"/>
+        <flowable:formProperty id="displayPriority" name="Priority" type="string" expression="${priority}" writable="false"/>
+        <flowable:formProperty id="displayMessage" name="Original Message" type="text" expression="${messageBody}" writable="false"/>
+        <flowable:formProperty id="escalatedMessage" name="Response Message" type="text" required="true"/>
         <flowable:formProperty id="escalatedAction" name="Action" type="enum" required="true">
           <flowable:value id="Reply" name="Reply to Sender"/>
           <flowable:value id="Close" name="Close"/>
@@ -159,51 +156,49 @@ ${taskLink}</flowable:expression>
     <!-- Exclusive Gateway: Receiver Action Decision -->
     <exclusiveGateway id="receiverActionGateway" name="Receiver Action?"/>
 
-    <!-- Service Task: Update Status to In Progress -->
-    <serviceTask id="updateStatusInProgress" name="Set Status: In Progress" flowable:delegateExpression="${scriptDelegate}">
-      <extensionElements>
-        <flowable:field name="script">
-          <flowable:string>execution.setVariable("workflowStatus", "InProgress");</flowable:string>
-        </flowable:field>
-        <flowable:field name="language">
-          <flowable:string>javascript</flowable:string>
-        </flowable:field>
-      </extensionElements>
-    </serviceTask>
+    <!-- Script Task: Update Status to In Progress -->
+    <scriptTask id="updateStatusInProgress" name="Set Status: In Progress" scriptFormat="groovy">
+      <script><![CDATA[
+        execution.setVariable("workflowStatus", "InProgress")
+      ]]></script>
+    </scriptTask>
+
+    <!-- Exclusive Gateway: Check if Asset for Reply -->
+    <exclusiveGateway id="checkAssetForReply" name="Has Related Asset?"/>
 
     <!-- Service Task: Save Receiver Reply -->
-    <serviceTask id="saveReceiverReply" name="Save Receiver Reply" flowable:delegateExpression="${addCommentDelegate}">
+    <serviceTask id="saveReceiverReply" name="Save Receiver Reply"
+                 flowable:class="com.collibra.dgc.core.workflow.activiti.delegate.AddCommentDelegate">
       <extensionElements>
         <flowable:field name="resourceId">
           <flowable:expression>${relatedAssetId}</flowable:expression>
         </flowable:field>
         <flowable:field name="content">
-          <flowable:expression>${currentUser.firstName} ${currentUser.lastName} (Receiver) - ${now()}:
-${receiverMessage}</flowable:expression>
+          <flowable:expression>Receiver Response:
+${receiverMessage}
+
+Status: In Progress</flowable:expression>
         </flowable:field>
       </extensionElements>
     </serviceTask>
 
-    <!-- Exclusive Gateway: Check if Asset for Reply -->
-    <exclusiveGateway id="checkAssetForReply" name="Has Related Asset?"/>
-
     <!-- Service Task: Notify Sender of Reply -->
-    <serviceTask id="notifySenderReply" name="Notify Sender of Reply" flowable:delegateExpression="${mailSenderDelegate}">
+    <serviceTask id="notifySenderReply" name="Notify Sender of Reply"
+                 flowable:class="com.collibra.dgc.core.workflow.activiti.delegate.MailSenderDelegate">
       <extensionElements>
         <flowable:field name="to">
           <flowable:expression>${startUser.email}</flowable:expression>
         </flowable:field>
         <flowable:field name="subject">
-          <flowable:expression>${mailSubjectPrefix} Reply to: ${title}</flowable:expression>
+          <flowable:expression>[Collibra Q&amp;A] Reply to: ${title}</flowable:expression>
         </flowable:field>
-        <flowable:field name="body">
+        <flowable:field name="message">
           <flowable:expression>You have received a reply to your message: "${title}"
 
 Receiver's Response:
 ${receiverMessage}
 
-View and respond:
-${taskLink}
+Please review the response in Collibra.
 
 ---
 This is an automated notification from Collibra Message Workflow.</flowable:expression>
@@ -214,52 +209,52 @@ This is an automated notification from Collibra Message Workflow.</flowable:expr
     <!-- User Task: Sender Reply View -->
     <userTask id="senderReplyTask" name="Review Response" flowable:assignee="${startUser.userName}">
       <extensionElements>
-        <flowable:formProperty id="conversationHistory" name="Conversation History" type="textarea" expression="${conversationHistory}" writable="false"/>
-        <flowable:formProperty id="receiverLastMessage" name="Receiver's Message" type="textarea" expression="${receiverMessage}" writable="false"/>
+        <flowable:formProperty id="displayReceiverMessage" name="Receiver's Message" type="text" expression="${receiverMessage}" writable="false"/>
         <flowable:formProperty id="senderAction" name="Action" type="enum" required="true">
           <flowable:value id="Reply" name="Reply"/>
           <flowable:value id="AcceptClose" name="Accept and Close"/>
         </flowable:formProperty>
-        <flowable:formProperty id="senderMessage" name="Your Reply" type="textarea" required="false"/>
+        <flowable:formProperty id="senderMessage" name="Your Reply" type="text" required="false"/>
       </extensionElements>
     </userTask>
 
     <!-- Exclusive Gateway: Sender Action Decision -->
     <exclusiveGateway id="senderActionGateway" name="Sender Action?"/>
 
+    <!-- Exclusive Gateway: Check if Asset for Sender Reply -->
+    <exclusiveGateway id="checkAssetForSenderReply" name="Has Related Asset?"/>
+
     <!-- Service Task: Save Sender Reply -->
-    <serviceTask id="saveSenderReply" name="Save Sender Reply" flowable:delegateExpression="${addCommentDelegate}">
+    <serviceTask id="saveSenderReply" name="Save Sender Reply"
+                 flowable:class="com.collibra.dgc.core.workflow.activiti.delegate.AddCommentDelegate">
       <extensionElements>
         <flowable:field name="resourceId">
           <flowable:expression>${relatedAssetId}</flowable:expression>
         </flowable:field>
         <flowable:field name="content">
-          <flowable:expression>${startUser.firstName} ${startUser.lastName} (${startUser.userName}) - ${now()}:
+          <flowable:expression>${startUser.firstName} ${startUser.lastName} - Follow-up:
 ${senderMessage}</flowable:expression>
         </flowable:field>
       </extensionElements>
     </serviceTask>
 
-    <!-- Exclusive Gateway: Check if Asset for Sender Reply -->
-    <exclusiveGateway id="checkAssetForSenderReply" name="Has Related Asset?"/>
-
     <!-- Service Task: Notify Receiver of Sender Reply -->
-    <serviceTask id="notifyReceiverSenderReply" name="Notify Receiver" flowable:delegateExpression="${mailSenderDelegate}">
+    <serviceTask id="notifyReceiverSenderReply" name="Notify Receiver"
+                 flowable:class="com.collibra.dgc.core.workflow.activiti.delegate.MailSenderDelegate">
       <extensionElements>
         <flowable:field name="to">
-          <flowable:expression>${group(recipientGroup)}</flowable:expression>
+          <flowable:expression>${recipientGroup}</flowable:expression>
         </flowable:field>
         <flowable:field name="subject">
-          <flowable:expression>${mailSubjectPrefix} Follow-up: ${title}</flowable:expression>
+          <flowable:expression>[Collibra Q&amp;A] Follow-up: ${title}</flowable:expression>
         </flowable:field>
-        <flowable:field name="body">
+        <flowable:field name="message">
           <flowable:expression>The sender has replied to your message on: "${title}"
 
 Sender's Response:
 ${senderMessage}
 
-View and respond:
-${taskLink}
+Please review and respond in Collibra.
 
 ---
 This is an automated notification from Collibra Message Workflow.</flowable:expression>
@@ -268,15 +263,16 @@ This is an automated notification from Collibra Message Workflow.</flowable:expr
     </serviceTask>
 
     <!-- Service Task: Handle Manual Escalation -->
-    <serviceTask id="handleManualEscalation" name="Escalate to Council" flowable:delegateExpression="${mailSenderDelegate}">
+    <serviceTask id="handleManualEscalation" name="Escalate to Council"
+                 flowable:class="com.collibra.dgc.core.workflow.activiti.delegate.MailSenderDelegate">
       <extensionElements>
         <flowable:field name="to">
-          <flowable:expression>${group(escalationGroup)}</flowable:expression>
+          <flowable:expression>${escalationGroup}</flowable:expression>
         </flowable:field>
         <flowable:field name="subject">
-          <flowable:expression>${mailSubjectPrefix} [ESCALATED] ${title}</flowable:expression>
+          <flowable:expression>[Collibra Q&amp;A] [ESCALATED] ${title}</flowable:expression>
         </flowable:field>
-        <flowable:field name="body">
+        <flowable:field name="message">
           <flowable:expression>This message has been escalated by the receiver group.
 
 Escalation Reason:
@@ -289,8 +285,7 @@ Category: ${category}
 Message:
 ${messageBody}
 
-Please review and take action:
-${taskLink}</flowable:expression>
+Please review and take action in Collibra.</flowable:expression>
         </flowable:field>
       </extensionElements>
     </serviceTask>
@@ -298,44 +293,42 @@ ${taskLink}</flowable:expression>
     <!-- Exclusive Gateway: Escalated Action Decision -->
     <exclusiveGateway id="escalatedActionGateway" name="Escalated Action?"/>
 
-    <!-- Service Task: Update Status to Closed -->
-    <serviceTask id="updateStatusClosed" name="Set Status: Closed" flowable:delegateExpression="${scriptDelegate}">
-      <extensionElements>
-        <flowable:field name="script">
-          <flowable:string>execution.setVariable("workflowStatus", "Closed");</flowable:string>
-        </flowable:field>
-        <flowable:field name="language">
-          <flowable:string>javascript</flowable:string>
-        </flowable:field>
-      </extensionElements>
-    </serviceTask>
+    <!-- Script Task: Update Status to Closed -->
+    <scriptTask id="updateStatusClosed" name="Set Status: Closed" scriptFormat="groovy">
+      <script><![CDATA[
+        execution.setVariable("workflowStatus", "Closed")
+      ]]></script>
+    </scriptTask>
+
+    <!-- Exclusive Gateway: Check if Asset for Closure -->
+    <exclusiveGateway id="checkAssetForClosure" name="Has Related Asset?"/>
 
     <!-- Service Task: Save Closure Notes -->
-    <serviceTask id="saveClosureNotes" name="Save Closure Notes" flowable:delegateExpression="${addCommentDelegate}">
+    <serviceTask id="saveClosureNotes" name="Save Closure Notes"
+                 flowable:class="com.collibra.dgc.core.workflow.activiti.delegate.AddCommentDelegate">
       <extensionElements>
         <flowable:field name="resourceId">
           <flowable:expression>${relatedAssetId}</flowable:expression>
         </flowable:field>
         <flowable:field name="content">
-          <flowable:expression>${currentUser.firstName} ${currentUser.lastName} (Receiver) - ${now()}:
-[CLOSED] ${closureNotes != null ? closureNotes : 'Workflow closed by receiver.'}</flowable:expression>
+          <flowable:expression>[CLOSED] ${closureNotes != null ? closureNotes : 'Workflow closed.'}
+
+Status: Closed</flowable:expression>
         </flowable:field>
       </extensionElements>
     </serviceTask>
 
-    <!-- Exclusive Gateway: Check if Asset for Closure -->
-    <exclusiveGateway id="checkAssetForClosure" name="Has Related Asset?"/>
-
     <!-- Service Task: Notify Sender of Closure -->
-    <serviceTask id="notifySenderClosure" name="Notify Sender of Closure" flowable:delegateExpression="${mailSenderDelegate}">
+    <serviceTask id="notifySenderClosure" name="Notify Sender of Closure"
+                 flowable:class="com.collibra.dgc.core.workflow.activiti.delegate.MailSenderDelegate">
       <extensionElements>
         <flowable:field name="to">
           <flowable:expression>${startUser.email}</flowable:expression>
         </flowable:field>
         <flowable:field name="subject">
-          <flowable:expression>${mailSubjectPrefix} Closed: ${title}</flowable:expression>
+          <flowable:expression>[Collibra Q&amp;A] Closed: ${title}</flowable:expression>
         </flowable:field>
-        <flowable:field name="body">
+        <flowable:field name="message">
           <flowable:expression>Your message "${title}" has been closed.
 
 ${closureNotes != null ? 'Closure Notes:\n' + closureNotes : ''}
@@ -356,11 +349,11 @@ This is an automated notification from Collibra Message Workflow.</flowable:expr
     <sequenceFlow id="flow2" sourceRef="initializeWorkflow" targetRef="checkAssetProvided"/>
 
     <sequenceFlow id="flow3" name="Asset Provided" sourceRef="checkAssetProvided" targetRef="saveInitialComment">
-      <conditionExpression xsi:type="tFormalExpression">${relatedAssetId != null &amp;&amp; relatedAssetId != ''}</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">${!empty relatedAssetId}</conditionExpression>
     </sequenceFlow>
 
     <sequenceFlow id="flow4" name="No Asset" sourceRef="checkAssetProvided" targetRef="notifyReceiver">
-      <conditionExpression xsi:type="tFormalExpression">${relatedAssetId == null || relatedAssetId == ''}</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">${empty relatedAssetId}</conditionExpression>
     </sequenceFlow>
 
     <sequenceFlow id="flow5" sourceRef="saveInitialComment" targetRef="notifyReceiver"/>
@@ -375,11 +368,11 @@ This is an automated notification from Collibra Message Workflow.</flowable:expr
     <sequenceFlow id="flow9" sourceRef="updateStatusInProgress" targetRef="checkAssetForReply"/>
 
     <sequenceFlow id="flow10" name="Has Asset" sourceRef="checkAssetForReply" targetRef="saveReceiverReply">
-      <conditionExpression xsi:type="tFormalExpression">${relatedAssetId != null &amp;&amp; relatedAssetId != ''}</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">${!empty relatedAssetId}</conditionExpression>
     </sequenceFlow>
 
     <sequenceFlow id="flow11" name="No Asset" sourceRef="checkAssetForReply" targetRef="notifySenderReply">
-      <conditionExpression xsi:type="tFormalExpression">${relatedAssetId == null || relatedAssetId == ''}</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">${empty relatedAssetId}</conditionExpression>
     </sequenceFlow>
 
     <sequenceFlow id="flow12" sourceRef="saveReceiverReply" targetRef="notifySenderReply"/>
@@ -392,11 +385,11 @@ This is an automated notification from Collibra Message Workflow.</flowable:expr
     </sequenceFlow>
 
     <sequenceFlow id="flow16" name="Has Asset" sourceRef="checkAssetForSenderReply" targetRef="saveSenderReply">
-      <conditionExpression xsi:type="tFormalExpression">${relatedAssetId != null &amp;&amp; relatedAssetId != ''}</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">${!empty relatedAssetId}</conditionExpression>
     </sequenceFlow>
 
     <sequenceFlow id="flow17" name="No Asset" sourceRef="checkAssetForSenderReply" targetRef="notifyReceiverSenderReply">
-      <conditionExpression xsi:type="tFormalExpression">${relatedAssetId == null || relatedAssetId == ''}</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">${empty relatedAssetId}</conditionExpression>
     </sequenceFlow>
 
     <sequenceFlow id="flow18" sourceRef="saveSenderReply" targetRef="notifyReceiverSenderReply"/>
@@ -436,11 +429,11 @@ This is an automated notification from Collibra Message Workflow.</flowable:expr
     <sequenceFlow id="flow29" sourceRef="updateStatusClosed" targetRef="checkAssetForClosure"/>
 
     <sequenceFlow id="flow30" name="Has Asset" sourceRef="checkAssetForClosure" targetRef="saveClosureNotes">
-      <conditionExpression xsi:type="tFormalExpression">${relatedAssetId != null &amp;&amp; relatedAssetId != ''}</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">${!empty relatedAssetId}</conditionExpression>
     </sequenceFlow>
 
     <sequenceFlow id="flow31" name="No Asset" sourceRef="checkAssetForClosure" targetRef="notifySenderClosure">
-      <conditionExpression xsi:type="tFormalExpression">${relatedAssetId == null || relatedAssetId == ''}</conditionExpression>
+      <conditionExpression xsi:type="tFormalExpression">${empty relatedAssetId}</conditionExpression>
     </sequenceFlow>
 
     <sequenceFlow id="flow32" sourceRef="saveClosureNotes" targetRef="notifySenderClosure"/>
