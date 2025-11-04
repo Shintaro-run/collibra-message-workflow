@@ -1,0 +1,33 @@
+# BPMN Development
+*.bak
+*.tmp
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+.project
+.classpath
+.settings/
+
+# OS files
+.DS_Store
+Thumbs.db
+.AppleDouble
+.LSOverride
+
+# Build artifacts (if any testing/validation tools used)
+build/
+dist/
+target/
+*.log
+
+# Personal/Private
+.data/
+gitignore/
+
+# Temporary files
+*.tmp.*
+temp/
